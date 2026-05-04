@@ -13,6 +13,10 @@ terraform/
   modules/
     vpc/            # VPC, subnets, IGW, route tables
     sql-server/     # EC2 SQL Server module (AMI, EBS, security group)
+scripts/
+  inventory/        # PowerShell + dbatools scripts to capture prod SQL config as JSON
+infrastructure-baseline/
+  <server-name>/    # JSON snapshot of prod (sp_configure, trace flags, etc.)
 app/
   .github/
     workflows/      # GitHub Actions CI/CD pipelines
@@ -61,6 +65,25 @@ Terraform commands always run from inside an environment folder (e.g. [terraform
 ```bash
 cd terraform/dev
 ```
+
+### First-time setup: `terraform.tfvars`
+
+Each environment requires a local `terraform.tfvars` (gitignored) for values that shouldn't go in source control. For dev, the only required variable is `admin_cidr` — the IP allowed to RDP into the SQL Server EC2s.
+
+Copy the example and fill in your public IP:
+
+```bash
+cp terraform.tfvars.example terraform.tfvars
+# then edit terraform.tfvars and replace the placeholder with your IP
+```
+
+Get your current public IP:
+
+```bash
+curl https://checkip.amazonaws.com
+```
+
+Use it as a `/32` CIDR (single host), e.g. `203.0.113.42/32`. If your home IP changes, update `terraform.tfvars` and re-run `terraform apply` — the security group rule will be replaced.
 
 ### `terraform init`
 

@@ -111,11 +111,13 @@ This is the environment you will break and rebuild freely. Everything here is de
 Every AWS resource lives inside a VPC. For your dev environment, create:
 
 - **1 VPC** — e.g. CIDR `10.0.0.0/16` (gives you 65,536 IP addresses to play with)
-- **1 private subnet** (`10.0.1.0/24`) — where SQL Server EC2 instances will live. Private = no direct internet access.
-- **1 public subnet** (`10.0.3.0/24`) — where your EC2 microservice will live. It needs to reach the internet to pull packages.
+- **1 private subnet** (`10.0.1.0/24`) — target home for SQL Server EC2s in production. Private = no direct internet access.
+- **1 public subnet** (`10.0.3.0/24`) — where the EC2 microservice lives. It needs internet to pull packages.
 - **1 Internet Gateway** — lets the public subnet reach the internet.
 
-No NAT gateway is needed — the SQL Server instances in the private subnet don't require internet access.
+**PoC note:** during the proof-of-concept phase, SQL Server EC2s sit in the *public* subnet (with public IPs) so we can RDP straight in. The private subnet exists in Terraform but is unused. Once the dev → test → prod pipeline is working end-to-end, the move-SQL-to-private-subnet-and-access-via-bastion-or-SSM step is a known follow-up.
+
+No NAT gateway is needed in either layout for now.
 
 ### 3.2 Terraform — VPC Module (Starter)
 
@@ -205,33 +207,60 @@ To deploy: `cd terraform/dev && terraform init && terraform plan && terraform ap
 
 ### 3.3 Two SQL Server Instances on EC2
 
-In a real enterprise stack, two SQL Server instances often serve different roles. For your learning project, model them as:
+In a real enterprise stack, two SQL Server instances often serve different roles — typically an OLTP primary and a reporting / secondary. For PoC, the current Terraform calls the module twice with placeholder names `sql_live` and `sql_test` (resulting in instances `dev-live` and `dev-test`). Revisit the naming when you commit to a final pattern (primary/reporting, primary/secondary, etc.).
 
-| Instance | Role in your dummy stack |
-|---|---|
-| sql-dev-primary | OLTP — the main transactional database your microservice reads/writes |
-| sql-dev-reporting | Reporting / analytics — a second instance the microservice reads from for heavier queries |
+**Why we are not using AWS License Included AMIs:**
 
-Use a **Windows Server AMI with SQL Server pre-installed** (AWS License Included). This avoids the complexity of manual SQL Server installation or Ansible configuration.
+AWS does not offer a free License Included AMI for SQL Server *Developer* edition — the License Included options are Express (too limited for realistic learning), Standard, Enterprise, or Web (all metered hourly). To stay within free-tier compute and still run an edition that mirrors prod (Developer is feature-equivalent to Enterprise), the pattern is:
+
+1. Launch a vanilla Windows Server 2022 AMI (free, included in compute hours)
+2. `user_data` silently installs SQL Server 2022 Developer from an ISO staged in S3, driven by a `ConfigurationFile.ini` checked into Git
+3. After install, run `scripts/inventory/Apply-SqlBaseline.ps1` against the new instance to apply prod config (sp_configure, trace flags, DBMail set to Disable or RedirectToLocal)
+4. For PoC, `t3.micro` is fine — workload is one or two databases with a few hundred rows of dummy data. In a real workplace you'd mirror prod's instance type *family* (e.g. `m5.large` → `m5.large`) so memory/CPU ratios match.
+
+**Install split — what goes where:**
+
+| Layer | Owns | Examples |
+|---|---|---|
+| `ConfigurationFile.ini` | Invariants of the install itself (`setup.exe` reads this directly) | Features (`SQLENGINE`, `AGENT`), instance name, service accounts, collation, install paths, `SQLSYSADMINACCOUNTS`, security mode |
+| PowerShell wrapper | Orchestration around `setup.exe` | Mount/copy the ISO from S3, run `setup.exe /ConfigurationFile=...`, wait for completion, log output, signal success |
+| `Apply-SqlBaseline.ps1` (post-install) | Tunable config that drifts from prod | sp_configure values, trace flags, DBMail mode, server-level settings |
+
+The reason for the split: `ConfigurationFile.ini` is what `setup.exe` natively understands and the right place for things that can only be set at install time. Anything that *can* be changed after install belongs in the baseline JSON, where it's diffable against prod via `Inventory-SqlServer.ps1`.
+
+Tradeoff: each `terraform apply` of a destroyed env takes ~30 min while SQL installs. Acceptable because dev/test rebuilds are infrequent (monthly, or after major prod changes). See **Phase C** for when Packer becomes worth adding to short-circuit this.
+
+**Access pattern (PoC):** SQL EC2s sit in the public subnet with public IPs. RDP (3389) is allowlisted from a configured admin CIDR; SSMS runs locally on the box. SSM Session Manager is a valid alternative — the IAM role is already wired up — but RDP wins on familiarity for SQL Server admin during PoC. Production target: private subnet, accessed via bastion or SSM only.
 
 ```hcl
-# terraform/modules/sql-server/main.tf
+# terraform/modules/sql-server/main.tf — current shape
 
 resource "aws_instance" "sql_server" {
-  ami                    = var.sql_server_ami  # Windows Server with SQL Server License Included
-  instance_type          = var.instance_type   # e.g. "t3.medium"
-  subnet_id              = var.private_subnet_id
+  ami                    = var.windows_ami_id   # vanilla Windows Server 2022
+  instance_type          = var.instance_type    # t3.micro for PoC
+  subnet_id              = var.subnet_id        # public subnet during PoC; private in prod target
   vpc_security_group_ids = [aws_security_group.sql.id]
-  key_name               = var.key_name
+  iam_instance_profile   = var.iam_instance_profile  # SSM-enabled role
+
+  # user_data (to be added) will install SQL Server Developer silently from an
+  # ISO in S3 using setup.exe /ConfigurationFile=..., then run Apply-SqlBaseline.ps1.
 
   root_block_device {
-    volume_size = 30
+    volume_size = var.root_volume_size  # 30 GB for PoC
+    volume_type = "gp3"
   }
 
-  # Separate EBS volume for SQL data — don't use the root volume
+  # Separate EBS volume for SQL data
   ebs_block_device {
-    device_name = "/dev/xvdf"
-    volume_size = var.data_volume_size  # e.g. 50 GB
+    device_name = "/dev/sdf"
+    volume_size = var.data_volume_size
+    volume_type = "gp3"
+  }
+
+  # Separate EBS volume for SQL log (mirrors prod best practice)
+  ebs_block_device {
+    device_name = "/dev/sdg"
+    volume_size = var.log_volume_size
     volume_type = "gp3"
   }
 
@@ -239,29 +268,45 @@ resource "aws_instance" "sql_server" {
 }
 ```
 
-Call the module twice in `terraform/dev/main.tf` — once for primary, once for reporting.
+The dev environment calls this module twice in `terraform/dev/main.tf`. **Free-tier note:** root + data + log = 60 GB per instance × 2 = 120 GB EBS, which exceeds the 30 GB free tier. Either shrink volumes or accept the small overage (~£8/month at gp3 rates) while the PoC is running, then `terraform destroy` between sessions.
+
+A future improvement is to swap the hard-coded AMI ID for a `data "aws_ami"` lookup that pulls the latest Windows Server 2022 base AMI for the region — that way the AMI doesn't drift with regional updates.
+
+**Two-script sync workflow with prod:**
+
+| Script | Direction | Purpose |
+|---|---|---|
+| `scripts/inventory/Inventory-SqlServer.ps1` | prod → Git | Snapshots prod config to JSON. Re-run periodically; Git diff shows drift. |
+| `scripts/inventory/Apply-SqlBaseline.ps1` | Git → dev/test | Brings a dev/test instance in line with the baseline. Supports `-WhatIf`. Refuses to target the source server. |
+
+The apply script intentionally does NOT copy host-specific settings (max memory, MAXDOP, tempdb file sizes) — those scale to the target box. It also does NOT copy logins, linked servers, or databases — those have separate lifecycle concerns covered in Phase A.
+
+**DBMail safety in dev/test:** the apply script's `-DbMailMode` parameter controls behaviour:
+- `Disable` (default) — sets `Database Mail XPs` to 0; existing accounts/profiles become inert
+- `RedirectToLocal` — recreates accounts/profiles with SMTP rewritten to a local catcher (smtp4dev / MailHog at `localhost:25`); jobs still fire, emails get captured in a UI, never delivered
+- `Match` — intentionally not implemented; refuses to silently mirror real SMTP servers into dev/test
 
 ### 3.4 Security Groups
 
-Security groups are stateful firewalls. Define one for SQL Server EC2 that only accepts SQL Server traffic (port 1433) and RDP (port 3389) from within the VPC:
+Security groups are stateful firewalls. The SQL Server module defines one allowing SQL traffic (1433) from the VPC and RDP (3389) from a configurable admin CIDR (your home IP during PoC):
 
 ```hcl
 resource "aws_security_group" "sql" {
-  name   = "${var.env}-sql-sg"
+  name   = "${var.env}-${var.role}-sg"
   vpc_id = var.vpc_id
 
   ingress {
     from_port   = 1433
     to_port     = 1433
     protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]  # only allow traffic from inside the VPC
+    cidr_blocks = [var.vpc_cidr]  # SQL only from inside the VPC
   }
 
   ingress {
     from_port   = 3389
     to_port     = 3389
     protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]  # RDP from within VPC only
+    cidr_blocks = [var.admin_cidr]  # RDP only from your admin CIDR (e.g. home IP /32)
   }
 
   egress {
@@ -335,17 +380,17 @@ module "vpc" {
   ...
 }
 
-module "sql_primary" {
+module "sql_live" {
   source = "../modules/sql-server"
   env    = "test"
-  role   = "sql-primary"
+  role   = "live"
   ...
 }
 
-module "sql_reporting" {
+module "sql_test" {
   source = "../modules/sql-server"
   env    = "test"
-  role   = "sql-reporting"
+  role   = "test"
   ...
 }
 ```
@@ -877,8 +922,8 @@ npm install -g @anthropic-ai/claude-code
 
 # Add to /etc/environment or ~/.bashrc
 export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=eu-west-1
-export ANTHROPIC_MODEL=anthropic.claude-sonnet-4-5-20251001-v1:0
+export AWS_REGION=eu-west-2
+export ANTHROPIC_MODEL=anthropic.claude-sonnet-4-5-20251001-v1:0  # check Bedrock console for the latest available model ID
 
 # No ANTHROPIC_API_KEY needed.
 # AWS credentials come automatically from the EC2 instance IAM role.
@@ -908,6 +953,51 @@ cd ~/devops-learning && claude
 > Look at .github/workflows/deploy-sql.yml and explain
 > why the deploy-prod job might not trigger after deploy-test
 ```
+
+---
+
+## Phase C — Packer for Golden AMIs
+
+*Deferred — revisit when dev/test churn justifies it*
+
+AWS does not offer a free License Included AMI for SQL Server Developer edition, so dev/test SQL Server EC2 instances are built from a vanilla Windows Server AMI plus a silent SQL Server install in `user_data`, with settings driven by a JSON snapshot of prod (see `scripts/inventory/Inventory-SqlServer.ps1`).
+
+This works because dev/test SQL Servers are rebuilt periodically — typically monthly, or when a major change lands on prod — not on every code push. A 30-minute SQL install on an infrequent rebuild is acceptable.
+
+### When to revisit Packer
+
+Packer (HashiCorp's image-building tool) builds a pre-baked AMI: vanilla Windows → install SQL Server → apply baseline → snapshot. The output is a versioned AMI ID that Terraform consumes, and EC2 launches drop from ~30 minutes to ~2 minutes.
+
+Add Packer if any of these become true:
+
+| Signal | Why Packer helps |
+|---|---|
+| Dev/test rebuilds become frequent (weekly+) | The 30-min `user_data` install becomes a real bottleneck |
+| You need ephemeral feature-branch environments | Spinning up a fresh DB per PR is only viable with fast launches |
+| Multiple engineers each maintaining their own dev env | Shared AMI = consistent baseline, no "works on my machine" |
+| Compliance/audit requires immutable, hash-versioned base images | AMIs tied to git commits give you that audit trail |
+| You're deploying to multiple AWS regions or accounts | Packer builds once and copies the AMI everywhere |
+
+### What a Packer-based flow would look like
+
+```
+Packer (build phase, runs when SQL binaries change — rarely)
+  ├── Base: latest Windows Server 2022 AMI
+  ├── Install SQL Server 2022 Developer (silent, from S3-hosted ISO)
+  ├── Apply baseline (DBMail XPs off, TCP enabled, firewall rules)
+  └── Output: ami-0abcd1234... tagged with git commit SHA
+
+Terraform (deploy phase, runs per environment)
+  ├── data "aws_ami" pulls latest baked AMI by tag
+  ├── EC2 launches in ~2 min instead of 30
+  └── user_data still applies env-specific config (memory, MAXDOP, etc.)
+```
+
+The split stays the same — invariants in the image, env-specific config in `user_data`. Packer just changes *where* the install step runs.
+
+### Why we are not doing this yet
+
+Adding Packer means a second tool to learn, a second pipeline to maintain (image build vs infrastructure apply), and a separate S3 bucket for SQL Server install media. For a 2–4 instance learning project rebuilt occasionally, the `user_data` approach is simpler and keeps the focus on Terraform + GitHub Actions + SQL fundamentals. Revisit once the rebuild cadence or environment count justifies the extra moving parts.
 
 ---
 

@@ -1,0 +1,6 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored; this example file is committed so collaborators know the shape.
+
+# Your public IP, /32 = single host. Get it from https://checkip.amazonaws.com.
+# Used to allowlist RDP (3389) into the SQL Server EC2s during PoC.
+admin_cidr = "0.0.0.0/32"

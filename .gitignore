@@ -1,3 +1,29 @@
 # Claude Code
 CLAUDE.md
 .claude/
+
+# Terraform
+# Local provider plugin cache and module downloads — re-created by `terraform init`
+.terraform/
+.terraform.tfstate.lock.info
+
+# State files — may contain secrets, environment-specific
+*.tfstate
+*.tfstate.*
+
+# Variable files — often contain secrets
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Local override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Note: .terraform.lock.hcl SHOULD be committed — it pins provider versions for reproducibility

@@ -86,12 +86,14 @@ Create a repository called `devops-learning` (or similar) with this folder struc
 ```
 devops-learning/
 ├── terraform/
-│   ├── dev/          # Terraform config for dev environment
-│   ├── test/         # Terraform config for test environment
-│   └── modules/      # Reusable Terraform modules (VPC, SQL Server EC2, etc.)
-├── app/              # Your dummy microservice source code
+│   ├── dev/              # Dev environment (providers.tf, variables.tf, main.tf)
+│   ├── test/             # Test environment (same structure as dev)
+│   └── modules/
+│       ├── vpc/          # VPC, subnets, IGW, route tables
+│       └── sql-server/   # EC2 SQL Server module (AMI, EBS, security group)
+├── app/                  # Your dummy microservice source code
 └── .github/
-    └── workflows/    # GitHub Actions pipeline files (.yml)
+    └── workflows/        # GitHub Actions pipeline files (.yml)
 ```
 
 **Tip:** keeping dev and test as separate Terraform folders means you can apply them independently and they have no shared state.
@@ -123,6 +125,7 @@ No NAT gateway is needed — the SQL Server instances in the private subnet don'
 resource "aws_vpc" "main" {
   cidr_block           = var.cidr
   enable_dns_hostnames = true
+  enable_dns_support   = true
   tags = { Name = "${var.env}-vpc" }
 }
 
@@ -134,16 +137,67 @@ resource "aws_subnet" "private" {
 }
 
 resource "aws_subnet" "public" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.public_subnet_cidr
-  availability_zone = "${var.region}a"
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnet_cidr
+  availability_zone       = "${var.region}a"
+  map_public_ip_on_launch = true
   tags = { Name = "${var.env}-public" }
 }
 
-# Internet gateway for the public subnet
+# Internet gateway
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
   tags = { Name = "${var.env}-igw" }
+}
+
+# Public route table — routes internet traffic through the IGW
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = { Name = "${var.env}-public-rt" }
+}
+
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+# Private route table — takes ownership of the VPC's default RT so main = private (safe default)
+resource "aws_default_route_table" "private" {
+  default_route_table_id = aws_vpc.main.default_route_table_id
+  tags                   = { Name = "${var.env}-private-rt" }
+}
+
+resource "aws_route_table_association" "private" {
+  subnet_id      = aws_subnet.private.id
+  route_table_id = aws_default_route_table.private.id
+}
+```
+
+**Why `aws_default_route_table` for the private RT?**
+
+When AWS creates a VPC, it auto-creates one route table and flags it as `main`. The main RT is the fallback for any subnet you forget to explicitly associate. Best practice is to make `main = private` so a forgotten subnet defaults to having no internet access (safe), rather than `main = public` where a forgotten subnet could silently become internet-facing.
+
+Using `aws_default_route_table` takes ownership of the auto-created RT and configures it as your private RT — one fewer resource than creating a brand-new private RT and leaving the auto-created one orphaned.
+
+The module also has `variables.tf` (declares `env`, `region`, `cidr`, `public_subnet_cidr`, `private_subnet_cidr`) and `outputs.tf` (exposes `vpc_id`, `vpc_cidr`, `public_subnet_id`, `private_subnet_id`).
+
+**The dev environment calls the module like this:**
+
+```hcl
+# terraform/dev/main.tf
+module "vpc" {
+  source              = "../modules/vpc"
+  env                 = var.env
+  region              = var.region
+  cidr                = "10.0.0.0/16"
+  public_subnet_cidr  = "10.0.3.0/24"
+  private_subnet_cidr = "10.0.1.0/24"
 }
 ```
 

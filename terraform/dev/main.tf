@@ -40,7 +40,7 @@ module "sql_live" {
   admin_cidr = var.admin_cidr
   subnet_id  = module.vpc.public_subnet_id
 
-  windows_ami_id = "ami-0b08995d5950c62de"
+  windows_ami_id = "ami-0b08995d5950c62de" # Windows Server 2022 Base 
   iam_instance_profile = aws_iam_instance_profile.ssm.name
 
   # sql_iso_s3_uri         = var.sql_iso_s3_uri
@@ -61,7 +61,7 @@ module "sql_test" {
   admin_cidr = var.admin_cidr
   subnet_id  = module.vpc.public_subnet_id
 
-  windows_ami_id = "ami-0b08995d5950c62de"
+  windows_ami_id = "ami-0d99de470a2818d2b" # Windows Server 2016 Base - to run SQL Server 2012 w/ SP4 Update
   iam_instance_profile = aws_iam_instance_profile.ssm.name
 
   # sql_iso_s3_uri         = var.sql_iso_s3_uri

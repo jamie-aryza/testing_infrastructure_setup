@@ -115,7 +115,7 @@ Every AWS resource lives inside a VPC. For your dev environment, create:
 - **1 public subnet** (`10.0.3.0/24`) — where the EC2 microservice lives. It needs internet to pull packages.
 - **1 Internet Gateway** — lets the public subnet reach the internet.
 
-**PoC note:** during the proof-of-concept phase, SQL Server EC2s sit in the *public* subnet (with public IPs) so we can RDP straight in. The private subnet exists in Terraform but is unused. Once the dev → test → prod pipeline is working end-to-end, the move-SQL-to-private-subnet-and-access-via-bastion-or-SSM step is a known follow-up.
+**PoC note:** during the proof-of-concept phase, SQL Server EC2s sit in the *public* subnet (with public IPs) so we can bootstrap them and manage them over WinRM HTTPS. The private subnet exists in Terraform but is unused. This is a PoC trade-off, not the target design. Once the dev → test → prod pipeline is working end-to-end, the move-SQL-to-private-subnet-and-access-via-bastion-or-VPN step is a known follow-up.
 
 No NAT gateway is needed in either layout for now.
 
@@ -230,7 +230,13 @@ The reason for the split: `ConfigurationFile.ini` is what `setup.exe` natively u
 
 Tradeoff: each `terraform apply` of a destroyed env takes ~30 min while SQL installs. Acceptable because dev/test rebuilds are infrequent (monthly, or after major prod changes). See **Phase C** for when Packer becomes worth adding to short-circuit this.
 
-**Access pattern (PoC):** SQL EC2s sit in the public subnet with public IPs. RDP (3389) is allowlisted from a configured admin CIDR; SSMS runs locally on the box. SSM Session Manager is a valid alternative — the IAM role is already wired up — but RDP wins on familiarity for SQL Server admin during PoC. Production target: private subnet, accessed via bastion or SSM only.
+**Access pattern (PoC):** SQL EC2s sit in the public subnet with public IPs. Admin and automation access uses WinRM over HTTPS (5986) allowlisted from a configured admin CIDR. This is preferred over SSH because it is the standard Windows automation path, has stronger Ansible support, and fits PowerShell-first administration with less friction. RDP is optional break-glass access only if you decide to keep it, and SSM Session Manager remains a valid fallback because the IAM role is already wired up. Production target: private subnet, accessed over WinRM HTTPS through a bastion or VPN.
+
+**PoC security controls for WinRM HTTPS:**
+- HTTPS only — never expose unencrypted WinRM
+- Allow inbound 5986 only from the fixed admin CIDR
+- Use strong admin credentials and avoid broad internet exposure
+- Treat certificate bootstrap carefully: self-signed is acceptable for PoC if trust is pinned deliberately, but a proper certificate is better
 
 ```hcl
 # terraform/modules/sql-server/main.tf — current shape
@@ -288,7 +294,7 @@ The apply script intentionally does NOT copy host-specific settings (max memory,
 
 ### 3.4 Security Groups
 
-Security groups are stateful firewalls. The SQL Server module defines one allowing SQL traffic (1433) from the VPC and RDP (3389) from a configurable admin CIDR (your home IP during PoC):
+Security groups are stateful firewalls. The SQL Server module should allow SQL traffic (1433) from the VPC and WinRM HTTPS (5986) from a configurable admin CIDR (your home IP during PoC). Keep RDP closed unless you explicitly retain it for break-glass access:
 
 ```hcl
 resource "aws_security_group" "sql" {
@@ -303,10 +309,10 @@ resource "aws_security_group" "sql" {
   }
 
   ingress {
-    from_port   = 3389
-    to_port     = 3389
+    from_port   = 5986
+    to_port     = 5986
     protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]  # RDP only from your admin CIDR (e.g. home IP /32)
+    cidr_blocks = [var.admin_cidr]  # WinRM HTTPS only from your admin CIDR (e.g. home IP /32)
   }
 
   egress {
@@ -358,6 +364,29 @@ Never hard-code database passwords. Use AWS Secrets Manager:
 3. In your app, retrieve the secret at startup instead of reading from appsettings.json
 
 **Security rule of thumb:** If a value would be embarrassing to commit to GitHub, it belongs in Secrets Manager (or GitHub Secrets for pipeline variables). This includes: database passwords, API keys, connection strings, and certificates.
+
+### 3.7 Host Prep Before SQL Install
+
+These are the host tasks to complete before touching SQL Server setup. Keep this stage focused on the Windows box itself — not the engine install or post-install SQL tuning.
+
+**Necessary before SQL install:**
+- Select the correct Windows version for each role and record the exact AMI ID
+- Rebuild the EC2 with the chosen AMI
+- Bootstrap secure WinRM HTTPS so Ansible has a standard Windows management path
+- Verify the admin access path works from the fixed admin CIDR
+- Run Windows first-boot configuration
+- Ensure SQL install media is reachable from the host
+- Initialize and format extra EBS disks if SQL will use them for data, logs, or tempdb
+
+**Recommended but optional refinements:**
+- Rename the host for consistency
+- Apply Windows Updates before SQL setup
+- Keep RDP disabled entirely unless you want explicit break-glass access
+- Move SQL paths off `C:` immediately instead of deferring that split
+
+**Automation split:**
+- EC2 `user_data`: bootstrap only, just enough to enable secure remote automation
+- Ansible: first-boot Windows configuration, WinRM hardening, disk prep, prereqs, and later SQL orchestration
 
 ---
 

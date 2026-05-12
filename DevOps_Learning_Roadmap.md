@@ -4,7 +4,7 @@ Cloud Dev & Test | On-Prem Production | GitHub Actions CI/CD
 
 **Stack:** AWS | SQL Server x2 | .NET Microservice | GitHub Actions
 
-**Current implementation note:** for this repo's Windows-heavy SQL Server PoC, the preferred automation path is `Terraform + WinRM + PowerShell`. Ansible was explored for Windows host prep, but PowerShell is now the primary orchestration path because it is lower friction on a Windows admin machine and better matches the existing SQL Server/dbatools workflow.
+**Current implementation note:** for this repo's Windows-heavy SQL Server PoC, the preferred automation path is `Terraform + WinRM + PowerShell`. Ansible was explored for Windows host prep, but has been dropped from the active path because PowerShell is lower friction on a Windows admin machine and better matches the existing SQL Server/dbatools workflow.
 
 ## 1. The Big Picture
 

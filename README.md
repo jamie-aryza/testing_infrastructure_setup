@@ -2,7 +2,7 @@
 
 A phased DevOps learning project building a full CI/CD pipeline across Dev, Test, and Prod environments using AWS, Terraform, GitHub Actions, SQL Server, and a .NET microservice.
 
-For the current Windows-heavy SQL Server PoC, the preferred automation path is `Terraform + WinRM + PowerShell`. Ansible was explored for Windows host prep, but has been de-prioritized because PowerShell is a lower-friction fit on a Windows admin machine and lines up better with the repo's existing SQL Server and `dbatools` scripts.
+For the current Windows-heavy SQL Server PoC, the preferred automation path is `Terraform + WinRM + PowerShell`. Ansible was explored for Windows host prep, but has been dropped from the active path because PowerShell is a lower-friction fit on a Windows admin machine and lines up better with the repo's existing SQL Server and `dbatools` scripts.
 
 See [DevOps_Learning_Roadmap.md](DevOps_Learning_Roadmap.md) for the full learning plan.
 
@@ -16,8 +16,9 @@ terraform/
     vpc/            # VPC, subnets, IGW, route tables
     sql-server/     # EC2 SQL Server module (AMI, EBS, security group)
 scripts/
-  inventory/        # PowerShell + dbatools scripts to capture prod SQL config as JSON
-  sql-install/      # ConfigurationFile.ini (live/test) + Install-SqlServer.ps1
+  bootstrap/        # PowerShell bootstrap scripts for WinRM and host access
+  inventory/        # PowerShell + dbatools scripts to capture/apply SQL config as JSON
+  sql-install/      # SQL Server install configuration files and wrappers
 infrastructure-baseline/
   <server-name>/    # JSON snapshot of prod (sp_configure, trace flags, etc.)
 app/

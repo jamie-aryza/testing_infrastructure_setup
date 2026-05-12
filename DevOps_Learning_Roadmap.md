@@ -4,6 +4,8 @@ Cloud Dev & Test | On-Prem Production | GitHub Actions CI/CD
 
 **Stack:** AWS | SQL Server x2 | .NET Microservice | GitHub Actions
 
+**Current implementation note:** for this repo's Windows-heavy SQL Server PoC, the preferred automation path is `Terraform + WinRM + PowerShell`. Ansible was explored for Windows host prep, but PowerShell is now the primary orchestration path because it is lower friction on a Windows admin machine and better matches the existing SQL Server/dbatools workflow.
+
 ## 1. The Big Picture
 
 Before touching a single command, it helps to understand the full landscape you are building. Your eventual setup will look like this:
@@ -230,7 +232,7 @@ The reason for the split: `ConfigurationFile.ini` is what `setup.exe` natively u
 
 Tradeoff: each `terraform apply` of a destroyed env takes ~30 min while SQL installs. Acceptable because dev/test rebuilds are infrequent (monthly, or after major prod changes). See **Phase C** for when Packer becomes worth adding to short-circuit this.
 
-**Access pattern (PoC):** SQL EC2s sit in the public subnet with public IPs. Admin and automation access uses WinRM over HTTPS (5986) allowlisted from a configured admin CIDR. This is preferred over SSH because it is the standard Windows automation path, has stronger Ansible support, and fits PowerShell-first administration with less friction. RDP is optional break-glass access only if you decide to keep it, and SSM Session Manager remains a valid fallback because the IAM role is already wired up. Production target: private subnet, accessed over WinRM HTTPS through a bastion or VPN.
+**Access pattern (PoC):** SQL EC2s sit in the public subnet with public IPs. Admin and automation access uses WinRM over HTTPS (5986) allowlisted from a configured admin CIDR. This is preferred over SSH because it is the standard Windows automation path and fits PowerShell-first administration with less friction on a Windows admin machine. RDP is optional break-glass access only if you decide to keep it, and SSM Session Manager remains a valid fallback because the IAM role is already wired up. Production target: private subnet, accessed over WinRM HTTPS through a bastion or VPN.
 
 **PoC security controls for WinRM HTTPS:**
 - HTTPS only — never expose unencrypted WinRM
@@ -372,7 +374,7 @@ These are the host tasks to complete before touching SQL Server setup. Keep this
 **Necessary before SQL install:**
 - Select the correct Windows version for each role and record the exact AMI ID
 - Rebuild the EC2 with the chosen AMI
-- Bootstrap secure WinRM HTTPS so Ansible has a standard Windows management path
+- Bootstrap secure WinRM HTTPS so PowerShell remoting has a standard Windows management path
 - Verify the admin access path works from the fixed admin CIDR
 - Run Windows first-boot configuration
 - Ensure SQL install media is reachable from the host
@@ -386,7 +388,7 @@ These are the host tasks to complete before touching SQL Server setup. Keep this
 
 **Automation split:**
 - EC2 `user_data`: bootstrap only, just enough to enable secure remote automation
-- Ansible: first-boot Windows configuration, WinRM hardening, disk prep, prereqs, and later SQL orchestration
+- PowerShell remoting: first-boot Windows configuration, WinRM hardening, disk prep, prereqs, SQL install orchestration, and post-install validation
 
 ---
 

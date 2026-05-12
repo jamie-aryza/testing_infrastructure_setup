@@ -1,0 +1,20 @@
+all:
+  children:
+    windows_sql_hosts:
+      hosts:
+        dev-live:
+          ansible_host: 203.0.113.10
+          sql_host_role: live
+          windows_server_version: "2022"
+        dev-test:
+          ansible_host: 203.0.113.11
+          sql_host_role: test
+          windows_server_version: "2016"
+      vars:
+        ansible_connection: winrm
+        ansible_port: 5986
+        ansible_winrm_transport: ntlm
+        ansible_winrm_scheme: https
+        ansible_winrm_server_cert_validation: ignore
+        ansible_user: Administrator
+        ansible_password: CHANGE_ME

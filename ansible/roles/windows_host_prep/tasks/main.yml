@@ -1,0 +1,56 @@
+---
+- name: Gather Windows facts
+  ansible.windows.setup:
+
+- name: Ensure bootstrap working directory exists
+  ansible.windows.win_file:
+    path: "{{ windows_install_root }}"
+    state: directory
+
+- name: Set Windows timezone
+  community.windows.win_timezone:
+    timezone: "{{ windows_timezone }}"
+
+- name: Disable RDP unless explicitly retained
+  ansible.windows.win_regedit:
+    path: HKLM:\System\CurrentControlSet\Control\Terminal Server
+    name: fDenyTSConnections
+    data: "{{ 0 if windows_enable_rdp else 1 }}"
+    type: dword
+
+- name: Ensure data and log disks are online
+  community.windows.win_initialize_disk:
+    disk_number: "{{ item.disk_number }}"
+    style: gpt
+    online: true
+  loop: "{{ windows_disk_map }}"
+  when: windows_disk_map | length > 0
+
+- name: Create SQL data and log partitions
+  community.windows.win_partition:
+    disk_number: "{{ item.disk_number }}"
+    drive_letter: "{{ item.drive_letter }}"
+    partition_size: -1
+  loop: "{{ windows_disk_map }}"
+  when: windows_disk_map | length > 0
+
+- name: Format SQL data and log volumes
+  community.windows.win_format:
+    drive_letter: "{{ item.drive_letter }}"
+    file_system: NTFS
+    new_label: "{{ item.label }}"
+    allocation_unit_size: 65536
+    full: false
+    force: false
+  loop: "{{ windows_disk_map }}"
+  when: windows_disk_map | length > 0
+
+- name: Report host prep summary
+  ansible.builtin.debug:
+    msg:
+      - "Host prep complete for {{ inventory_hostname }}"
+      - "SQL host role: {{ sql_host_role | default('undefined') }}"
+      - "Windows Server version: {{ windows_server_version | default('undefined') }}"
+      - "Timezone: {{ windows_timezone }}"
+      - "RDP enabled: {{ windows_enable_rdp }}"
+      - "Prepared drives: {{ windows_disk_map | map(attribute='drive_letter') | list }}"

@@ -10,8 +10,8 @@ resource "aws_security_group" "sql" {
   }
 
   ingress {
-    from_port   = 3389
-    to_port     = 3389
+    from_port   = 5986
+    to_port     = 5986
     protocol    = "tcp"
     cidr_blocks = [var.admin_cidr]
   }
@@ -30,6 +30,7 @@ resource "aws_instance" "sql_server" {
   instance_type          = var.instance_type
   vpc_security_group_ids = [aws_security_group.sql.id]
   iam_instance_profile   = var.iam_instance_profile
+  user_data              = var.user_data
 
   root_block_device {
     volume_size = var.root_volume_size

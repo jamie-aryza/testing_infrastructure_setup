@@ -7,6 +7,14 @@ module "vpc" {
   private_subnet_cidr = "10.0.1.0/24"
 }
 
+locals {
+  winrm_bootstrap_user_data = <<-EOF
+  <powershell>
+  ${file("${path.module}/../../scripts/bootstrap/Bootstrap-WinRMHttps.ps1")}
+  </powershell>
+  EOF
+}
+
 resource "aws_iam_role" "ssm" {
   name = "dev-ec2-ssm-role"
 
@@ -40,15 +48,16 @@ module "sql_live" {
   admin_cidr = var.admin_cidr
   subnet_id  = module.vpc.public_subnet_id
 
-  windows_ami_id = "ami-0b08995d5950c62de" # Windows Server 2022 Base 
+  windows_ami_id       = var.live_windows_ami_id
   iam_instance_profile = aws_iam_instance_profile.ssm.name
+  user_data            = local.winrm_bootstrap_user_data
 
   # sql_iso_s3_uri         = var.sql_iso_s3_uri
   # sa_password_secret_arn = var.sa_password_secret_arn
-  instance_type = "t3.micro"
+  instance_type     = "t3.micro"
   root_volume_size = 30
   data_volume_size = 20
-  log_volume_size = 10
+  log_volume_size  = 10
 }
 
 module "sql_test" {
@@ -61,14 +70,15 @@ module "sql_test" {
   admin_cidr = var.admin_cidr
   subnet_id  = module.vpc.public_subnet_id
 
-  windows_ami_id = "ami-0d99de470a2818d2b" # Windows Server 2016 Base - to run SQL Server 2012 w/ SP4 Update
+  windows_ami_id       = var.test_windows_ami_id
   iam_instance_profile = aws_iam_instance_profile.ssm.name
+  user_data            = local.winrm_bootstrap_user_data
 
   # sql_iso_s3_uri         = var.sql_iso_s3_uri
   # sa_password_secret_arn = var.sa_password_secret_arn
 
-  instance_type = "t3.micro"
+  instance_type     = "t3.micro"
   root_volume_size = 30
   data_volume_size = 20
-  log_volume_size = 10
+  log_volume_size  = 10
 }

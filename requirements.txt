@@ -1,0 +1,7 @@
+# NOTE:
+# These Python requirements are only needed if you choose to keep experimenting with the Ansible path.
+# The repo's preferred PoC automation path is now Terraform + WinRM + PowerShell.
+# On Windows admin machines, install WSL (`wsl --install`) and run Ansible from WSL, not native Windows Python.
+# Keep Terraform and AWS CLI installed normally on the host machine.
+ansible==10.7.0
+pywinrm==0.5.0

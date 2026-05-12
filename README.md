@@ -2,6 +2,8 @@
 
 A phased DevOps learning project building a full CI/CD pipeline across Dev, Test, and Prod environments using AWS, Terraform, GitHub Actions, SQL Server, and a .NET microservice.
 
+For the current Windows-heavy SQL Server PoC, the preferred automation path is `Terraform + WinRM + PowerShell`. Ansible was explored for Windows host prep, but has been de-prioritized because PowerShell is a lower-friction fit on a Windows admin machine and lines up better with the repo's existing SQL Server and `dbatools` scripts.
+
 See [DevOps_Learning_Roadmap.md](DevOps_Learning_Roadmap.md) for the full learning plan.
 
 ## Project Structure
@@ -15,6 +17,7 @@ terraform/
     sql-server/     # EC2 SQL Server module (AMI, EBS, security group)
 scripts/
   inventory/        # PowerShell + dbatools scripts to capture prod SQL config as JSON
+  sql-install/      # ConfigurationFile.ini (live/test) + Install-SqlServer.ps1
 infrastructure-baseline/
   <server-name>/    # JSON snapshot of prod (sp_configure, trace flags, etc.)
 app/
@@ -68,7 +71,7 @@ cd terraform/dev
 
 ### First-time setup: `terraform.tfvars`
 
-Each environment requires a local `terraform.tfvars` (gitignored) for values that shouldn't go in source control. For dev, the only required variable is `admin_cidr` — the IP allowed to RDP into the SQL Server EC2s.
+Each environment requires a local `terraform.tfvars` (gitignored) for values that shouldn't go in source control. For dev, the only required variable is `admin_cidr` — the IP allowed WinRM HTTPS (5986) access to the SQL Server EC2s.
 
 Copy the example and fill in your public IP:
 

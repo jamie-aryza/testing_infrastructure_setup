@@ -27,3 +27,6 @@ override.tf.json
 *_override.tf.json
 
 # Note: .terraform.lock.hcl SHOULD be committed — it pins provider versions for reproducibility
+
+# Python virtual environment for repo-local Ansible tooling
+.venv/

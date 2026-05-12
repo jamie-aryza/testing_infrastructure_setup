@@ -8,6 +8,9 @@ variable "admin_cidr" {}
 variable "windows_ami_id" {}
 variable "subnet_id" {}
 variable "iam_instance_profile" {}
+variable "user_data" {
+  default = null
+}
 
 variable "instance_type" {}
 

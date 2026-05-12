@@ -1,0 +1,6 @@
+---
+- name: Prepare Windows SQL hosts before SQL install
+  hosts: windows_sql_hosts
+  gather_facts: false
+  roles:
+    - windows_host_prep

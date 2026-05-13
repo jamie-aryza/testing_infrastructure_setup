@@ -33,7 +33,7 @@ CI/CD (Continuous Integration / Continuous Deployment) sits above all three envi
 | 0 - Foundations | AWS account, IAM, CLI, GitHub repo, Terraform basics, key terms | ✅ Done |
 | 1 - Dev Infrastructure | VPC, 2x EC2 SQL Server with EBS, security groups, Terraform modules | ✅ Done |
 | 2 - Host Bootstrap & Prep | WinRM HTTPS bootstrap, local admin, disk formatting, IAM/SSM | ✅ Done |
-| 3 - SQL Server Install | Silent install from S3 ISO, ConfigurationFile.ini, post-install baseline | ← Next |
+| 3 - SQL Server Install | Silent install from S3 ISO, ConfigurationFile.ini, post-install baseline | Ready to run |
 | A - SQL Source Control | Three-bucket strategy, dbatools scripting, managed vs legacy | |
 | 4 - GitHub Actions | SQL deployment pipeline, build → test → deploy, approval gates | |
 | 5 - Test Environment | Identical isolated environment, environment promotion strategy | |
@@ -412,35 +412,43 @@ Reads Terraform outputs for host IPs. Config in `scripts/bootstrap/HostPrep.Conf
 
 ## Phase 3 — SQL Server Install
 
-*Next*
+*Ready to run — scripts in place, upload ISO and fill config to proceed*
 
-With the hosts prepped (WinRM up, disks formatted), the next step is getting SQL Server running on both dev instances.
+With the hosts prepped (WinRM up, F: and G: disks formatted), SQL Server install is orchestrated over WinRM by `scripts/sql-install/Invoke-SqlInstall.ps1` — the same pattern as host prep.
 
-### SQL Server Install Strategy
+### How it works
 
-SQL Server Developer edition is not available as a free License Included AMI. The pattern is:
-
-1. Stage the SQL Server ISO in S3
-2. `user_data` (or a PowerShell script over WinRM) pulls the ISO from S3, mounts it, and runs `setup.exe /ConfigurationFile=...`
-3. `scripts/sql-install/ConfigurationFile.ini` drives the install — features, instance name, service accounts, collation, data/log paths pointing at F: and G:
-4. After install, `scripts/inventory/Apply-SqlBaseline.ps1` applies the prod config snapshot
+The admin machine generates a time-limited pre-signed S3 URL (`aws s3 presign`) for the ISO and passes it into a WinRM remote session. The EC2 downloads it with `Start-BitsTransfer`, mounts the ISO, runs `setup.exe /ConfigurationFile=...`, and dismounts. No AWS CLI is needed on the EC2 itself.
 
 **Install split:**
 
 | Layer | Owns | Examples |
 |---|---|---|
-| `ConfigurationFile.ini` | Invariants set at install time | Features (`SQLENGINE`, `AGENT`), instance name, service accounts, collation, file paths, `SQLSYSADMINACCOUNTS` |
-| PowerShell wrapper | Orchestration | Pull ISO from S3, run `setup.exe /ConfigurationFile=...`, wait, log, signal success |
+| `ConfigurationFile.ini` | Invariants set at install time | Features, instance name, service accounts, collation, file paths pointing at F:/G: |
+| `Invoke-SqlInstall.ps1` | Orchestration | Pre-signed URL generation, WinRM session, download, mount, `setup.exe`, status JSON |
 | `Apply-SqlBaseline.ps1` (post-install) | Tunable config that drifts from prod | sp_configure values, trace flags, DBMail mode |
 
-**Timing:** a silent SQL install takes ~25–30 minutes. Acceptable for PoC because dev/test rebuilds are infrequent. See Phase C for when Packer becomes worth adding to reduce this to ~2 minutes.
+**Timing:** ~25–30 minutes per host. Acceptable because dev/test rebuilds are infrequent. See Phase C for Packer cutting this to ~2 minutes.
 
-**What to do:**
-1. Upload the SQL Server Developer ISO to S3 and grant the EC2 IAM role `s3:GetObject` on that bucket/key
-2. Create `scripts/sql-install/ConfigurationFile.ini` with F: as `SQLUSERDBDIR`/`SQLUSERDBLOGDIR` and G: as `SQLTEMPDBDIR`
-3. Write `scripts/sql-install/Install-SqlServer.ps1` to pull the ISO and invoke `setup.exe`
-4. Add the install script call to `user_data` after the WinRM bootstrap (or run it over WinRM manually for the first time)
-5. Run `scripts/inventory/Apply-SqlBaseline.ps1` against each instance after install
+### Steps to run
+
+1. Upload the SQL Server Developer ISO (2019 for `dev-live`, 2012 for `dev-test`) to an S3 bucket your AWS credentials can access.
+2. Fill in `SqlIsoS3Uri` for each host in `scripts/sql-install/SqlInstall.Config.psd1`.
+3. Run:
+   ```powershell
+   # From repo root
+   .\scripts\sql-install\Invoke-SqlInstall.ps1
+
+   # Single host
+   .\scripts\sql-install\Invoke-SqlInstall.ps1 -HostName dev-live
+   ```
+4. After install, run `scripts/inventory/Apply-SqlBaseline.ps1` against each instance.
+
+Re-running without `-Force` detects the existing `MSSQLSERVER` service and skips safely.
+
+### Production note
+
+The pre-signed URL approach avoids needing the AWS CLI on the EC2 — practical for PoC. For production, the EC2 should download the ISO directly from S3 using its IAM role (`aws s3 cp`), which requires the AWS CLI pre-installed on the AMI. This is a natural part of Phase C (Packer): bake the CLI into the golden AMI and add `s3:GetObject` to the EC2 IAM role. Switch `Invoke-SqlInstall.ps1` from `Start-BitsTransfer $PresignedUrl` to `aws s3 cp $S3Uri` at that point.
 
 ---
 

@@ -164,7 +164,8 @@ $remoteScript = {
 
         $partition = Get-Partition -DiskNumber $diskNumber -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq $driveLetter } | Select-Object -First 1
         if (-not $partition) {
-            $partition = Get-Partition -DiskNumber $diskNumber -ErrorAction SilentlyContinue | Select-Object -First 1
+            # Exclude Reserved (MSR) partitions — GPT disks always have one and it is not usable as a data partition.
+            $partition = Get-Partition -DiskNumber $diskNumber -ErrorAction SilentlyContinue | Where-Object { $_.Type -notin @('Reserved', 'Unknown') } | Select-Object -First 1
         }
 
         if (-not $partition) {
@@ -178,8 +179,9 @@ $remoteScript = {
         $volume = try { Get-Volume -DriveLetter $driveLetter -ErrorAction Stop } catch { $null }
         if (-not $volume -or $volume.FileSystem -ne 'NTFS') {
             # Format-Volume via CIM cannot create a new volume on a raw partition in a remoting
-            # session. diskpart bypasses this reliably.
-            "select disk $diskNumber`nselect partition $($partition.PartitionNumber)`nformat fs=ntfs label=$label unit=64k quick" |
+            # session. diskpart bypasses this reliably. Drive letter assignment is also done here
+            # because New-Partition -DriveLetter does not reliably persist the letter over WinRM.
+            "select disk $diskNumber`nselect partition $($partition.PartitionNumber)`nformat fs=ntfs label=$label unit=64k quick`nassign letter=$driveLetter" |
                 diskpart | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "diskpart format failed for $purpose (disk $diskNumber, partition $($partition.PartitionNumber))" }
         }

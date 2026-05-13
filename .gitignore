@@ -30,3 +30,6 @@ override.tf.json
 
 # Python virtual environment for any repo-local tooling
 .venv/
+
+# SQL Server ISO files — too large for Git (1.5 GB+), stored in S3
+*.iso

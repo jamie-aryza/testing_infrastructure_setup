@@ -179,6 +179,71 @@ For the current PoC, this remoting step uses WinRM over HTTPS from a fixed admin
 
 Important: the password prompt here is for a Windows account on the EC2 instance that is allowed to remote and perform admin tasks. It is not asking for AWS IAM credentials.
 
+## SQL Server Install
+
+Run this after `Invoke-HostPrep.ps1` has completed (F: and G: disks must be formatted first).
+
+**One-time admin setup (do this before the first install):**
+
+1. **Get the SQL Server Developer ISO.** Download SQL Server 2019 Developer (free) from [microsoft.com/en-us/sql-server/sql-server-downloads](https://www.microsoft.com/en-us/sql-server/sql-server-downloads) → Developer edition → ISO download option.
+
+2. **Create an S3 bucket** to store the ISO. The bucket name must be globally unique across all AWS accounts:
+   ```powershell
+   aws s3 mb s3://aryza-sql-server-install --region eu-west-2
+   ```
+
+3. **Upload the ISO:**
+   ```powershell
+   aws s3 cp "SQLServer2019-x64-ENU-Dev.iso" s3://aryza-sql-server-install/sql2019-developer-x64.iso
+   ```
+   This is a ~1.5 GB upload — takes a few minutes on a typical home connection. The ISO is gitignored and lives in S3 only.
+
+4. **Update `SqlIsoS3Uri`** for both hosts in [scripts/sql-install/SqlInstall.Config.psd1](scripts/sql-install/SqlInstall.Config.psd1) to match the bucket name used above (e.g. `s3://aryza-sql-server-install/sql2019-developer-x64.iso`). Both entries use the same ISO. If you ever rename the bucket, this config file is the only place to update.
+
+**Run the install:**
+
+```powershell
+.\scripts\sql-install\Invoke-SqlInstall.ps1
+```
+
+To target a single host:
+
+```powershell
+.\scripts\sql-install\Invoke-SqlInstall.ps1 -HostName dev-live
+```
+
+As with host prep, the script prompts for the `.\sqlautomation` password. Pass `-UserName` if you changed it.
+
+The install takes roughly 25–30 minutes per host. The script writes a transcript and status JSON to `C:\ProgramData\Amazon\HostPrep\` on the EC2 — check `Install-SqlServer.status.json` there if something goes wrong.
+
+Re-running without `-Force` detects the existing `MSSQLSERVER` service and skips safely. To reinstall:
+
+```powershell
+.\scripts\sql-install\Invoke-SqlInstall.ps1 -Force
+```
+
+**S3 bucket cleanup:**
+
+The ISO bucket is not managed by Terraform — clean it up manually when no longer needed.
+
+Empty the bucket (keep the name reserved):
+```powershell
+aws s3 rm s3://aryza-sql-server-install --recursive
+```
+
+Delete the bucket entirely (frees the name):
+```powershell
+aws s3 rb s3://aryza-sql-server-install --force
+```
+
+If you plan to reinstall later, keeping the empty bucket avoids having to re-upload the ISO. If you delete the bucket, re-run the one-time setup steps above before the next install.
+
+**After install**, apply the prod configuration baseline:
+
+```powershell
+.\scripts\inventory\Apply-SqlBaseline.ps1 -SqlInstance <ec2-ip> -BaselinePath infrastructure-baseline\local-live
+```
+
 ## Typical Day-to-Day Flow
 
 ```bash

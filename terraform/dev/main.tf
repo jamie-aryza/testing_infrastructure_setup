@@ -8,9 +8,14 @@ module "vpc" {
 }
 
 locals {
+  winrm_bootstrap_script = templatefile("${path.module}/../../scripts/bootstrap/Bootstrap-WinRMHttps.ps1", {
+    automation_admin_username_b64 = base64encode(var.automation_admin_username)
+    automation_admin_password_b64 = base64encode(var.automation_admin_password)
+  })
+
   winrm_bootstrap_user_data = <<-EOF
   <powershell>
-  ${file("${path.module}/../../scripts/bootstrap/Bootstrap-WinRMHttps.ps1")}
+  ${local.winrm_bootstrap_script}
   </powershell>
   EOF
 }
@@ -54,10 +59,15 @@ module "sql_live" {
 
   # sql_iso_s3_uri         = var.sql_iso_s3_uri
   # sa_password_secret_arn = var.sa_password_secret_arn
-  instance_type     = "t3.micro"
+  enable_rdp       = true
+  instance_type    = "t3.micro"
   root_volume_size = 30
   data_volume_size = 20
   log_volume_size  = 10
+
+  # Explicit dependency to avoid a race condition where the instance launches before
+  # the instance profile is fully created, leaving the SSM agent without a role.
+  depends_on = [aws_iam_instance_profile.ssm]
 }
 
 module "sql_test" {
@@ -77,8 +87,13 @@ module "sql_test" {
   # sql_iso_s3_uri         = var.sql_iso_s3_uri
   # sa_password_secret_arn = var.sa_password_secret_arn
 
-  instance_type     = "t3.micro"
+  enable_rdp       = true
+  instance_type    = "t3.micro"
   root_volume_size = 30
   data_volume_size = 20
   log_volume_size  = 10
+
+  # Explicit dependency to avoid a race condition where the instance launches before
+  # the instance profile is fully created, leaving the SSM agent without a role.
+  depends_on = [aws_iam_instance_profile.ssm]
 }

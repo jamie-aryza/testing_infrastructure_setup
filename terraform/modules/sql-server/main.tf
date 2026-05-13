@@ -16,6 +16,13 @@ resource "aws_security_group" "sql" {
     cidr_blocks = [var.admin_cidr]
   }
 
+  ingress {
+    from_port   = 3389
+    to_port     = 3389
+    protocol    = "tcp"
+    cidr_blocks = var.enable_rdp ? [var.admin_cidr] : []
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

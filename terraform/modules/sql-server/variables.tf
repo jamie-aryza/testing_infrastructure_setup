@@ -12,6 +12,12 @@ variable "user_data" {
   default = null
 }
 
+variable "enable_rdp" {
+  description = "Temporarily open RDP (3389) from admin_cidr for direct testing. Set to false when not needed."
+  type        = bool
+  default     = false
+}
+
 variable "instance_type" {}
 
 variable "root_volume_size" {}

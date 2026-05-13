@@ -28,14 +28,19 @@ CI/CD (Continuous Integration / Continuous Deployment) sits above all three envi
 
 ### Your Learning Path at a Glance
 
-| Phase | What you will build / learn |
-|---|---|
-| 0 - Foundations | AWS account, IAM, CLI, GitHub repo, Terraform basics, key terms |
-| 1 - Dev on AWS | VPC, 2x EC2 SQL Server, EC2 + dummy microservice, secrets |
-| 2 - Test on AWS | Identical isolated environment, environment promotion strategy |
-| 3 - Prod on-prem | Windows Server, SQL Server, VPN tunnel to AWS, firewall rules |
-| 4 - GitHub Actions | Pipelines, build → test → deploy, approval gates, secrets |
-| 5 - End-to-end | Full push-to-deploy flow across all three environments |
+| Phase | What you will build / learn | Status |
+|---|---|---|
+| 0 - Foundations | AWS account, IAM, CLI, GitHub repo, Terraform basics, key terms | ✅ Done |
+| 1 - Dev Infrastructure | VPC, 2x EC2 SQL Server with EBS, security groups, Terraform modules | ✅ Done |
+| 2 - Host Bootstrap & Prep | WinRM HTTPS bootstrap, local admin, disk formatting, IAM/SSM | ✅ Done |
+| 3 - SQL Server Install | Silent install from S3 ISO, ConfigurationFile.ini, post-install baseline | ← Next |
+| A - SQL Source Control | Three-bucket strategy, dbatools scripting, managed vs legacy | |
+| 4 - GitHub Actions | SQL deployment pipeline, build → test → deploy, approval gates | |
+| 5 - Test Environment | Identical isolated environment, environment promotion strategy | |
+| 6 - Prod On-Prem | Windows Server, SQL Server, VPN tunnel to AWS, firewall rules | |
+| 7 - End-to-end | Full push-to-deploy flow across all three environments | |
+| B - Bedrock/Claude | Claude Code via Bedrock on dev EC2 | |
+| C - Packer | Golden AMIs when rebuild cadence justifies it | |
 
 ---
 
@@ -102,7 +107,7 @@ devops-learning/
 
 ---
 
-## Phase 1 — Dev Environment on AWS
+## Phase 1 — Dev Infrastructure on AWS ✅
 
 *Weeks 2–3*
 
@@ -367,32 +372,79 @@ Never hard-code database passwords. Use AWS Secrets Manager:
 
 **Security rule of thumb:** If a value would be embarrassing to commit to GitHub, it belongs in Secrets Manager (or GitHub Secrets for pipeline variables). This includes: database passwords, API keys, connection strings, and certificates.
 
-### 3.7 Host Prep Before SQL Install
+### 3.7 Host Prep ✅
 
-These are the host tasks to complete before touching SQL Server setup. Keep this stage focused on the Windows box itself — not the engine install or post-install SQL tuning.
+Host prep is split across two scripts. Keep this stage focused on the Windows box — not the SQL engine.
 
-**Necessary before SQL install:**
-- Select the correct Windows version for each role and record the exact AMI ID
-- Rebuild the EC2 with the chosen AMI
-- Bootstrap secure WinRM HTTPS so PowerShell remoting has a standard Windows management path
-- Verify the admin access path works from the fixed admin CIDR
-- Run Windows first-boot configuration
-- Ensure SQL install media is reachable from the host
-- Initialize and format extra EBS disks if SQL will use them for data, logs, or tempdb
+**Step 1 — user_data (automatic on first boot):** `scripts/bootstrap/Bootstrap-WinRMHttps.ps1`
 
-**Recommended but optional refinements:**
-- Rename the host for consistency
-- Apply Windows Updates before SQL setup
-- Keep RDP disabled entirely unless you want explicit break-glass access
-- Move SQL paths off `C:` immediately instead of deferring that split
+- Creates the `sqlautomation` local admin (via `net user` — `New-LocalUser` fails with `@` in passwords via SecureString on this AMI)
+- Creates a self-signed certificate and binds a WinRM HTTPS listener on port 5986
+- Sets the Windows firewall rule for 5986
+- Writes `C:\ProgramData\Amazon\WinRMBootstrap\Bootstrap-WinRMHttps.status.json` — check this to confirm success
 
-**Automation split:**
-- EC2 `user_data`: bootstrap only, just enough to enable secure remote automation
-- PowerShell remoting: first-boot Windows configuration, WinRM hardening, disk prep, prereqs, SQL install orchestration, and post-install validation
+**Step 2 — run once over WinRM:** `scripts/bootstrap/Invoke-HostPrep.ps1`
+
+```powershell
+# From repo root — targets all configured hosts
+.\scripts\bootstrap\Invoke-HostPrep.ps1
+
+# Single host
+.\scripts\bootstrap\Invoke-HostPrep.ps1 -HostName dev-live
+```
+
+Reads Terraform outputs for host IPs. Config in `scripts/bootstrap/HostPrep.Config.psd1`. What it does:
+- Sets timezone (GMT Standard Time)
+- Initialises and formats EBS disks: F: (SQLDATA, 20 GB) and G: (SQLLOG, 10 GB) at 64 KB allocation units
+- Uses `diskpart` for format — `Format-Volume` cannot create a new volume on a raw partition via CIM in a remoting session
+
+**If WinRM isn't up yet (bootstrap failed):** use SSM Fleet Manager → select instance → Node actions → Start session to get a shell on the box and re-run the bootstrap manually.
+
+**RDP for testing:** set `enable_rdp = true` in `terraform/dev/main.tf` and `terraform apply` to open port 3389 from `admin_cidr`. Set back to `false` when done.
 
 ---
 
-## Phase 2 — Test Environment on AWS
+## Phase 2 — Host Bootstrap & Prep ✅
+
+*Complete — see section 3.7 above for implementation details.*
+
+---
+
+## Phase 3 — SQL Server Install
+
+*Next*
+
+With the hosts prepped (WinRM up, disks formatted), the next step is getting SQL Server running on both dev instances.
+
+### SQL Server Install Strategy
+
+SQL Server Developer edition is not available as a free License Included AMI. The pattern is:
+
+1. Stage the SQL Server ISO in S3
+2. `user_data` (or a PowerShell script over WinRM) pulls the ISO from S3, mounts it, and runs `setup.exe /ConfigurationFile=...`
+3. `scripts/sql-install/ConfigurationFile.ini` drives the install — features, instance name, service accounts, collation, data/log paths pointing at F: and G:
+4. After install, `scripts/inventory/Apply-SqlBaseline.ps1` applies the prod config snapshot
+
+**Install split:**
+
+| Layer | Owns | Examples |
+|---|---|---|
+| `ConfigurationFile.ini` | Invariants set at install time | Features (`SQLENGINE`, `AGENT`), instance name, service accounts, collation, file paths, `SQLSYSADMINACCOUNTS` |
+| PowerShell wrapper | Orchestration | Pull ISO from S3, run `setup.exe /ConfigurationFile=...`, wait, log, signal success |
+| `Apply-SqlBaseline.ps1` (post-install) | Tunable config that drifts from prod | sp_configure values, trace flags, DBMail mode |
+
+**Timing:** a silent SQL install takes ~25–30 minutes. Acceptable for PoC because dev/test rebuilds are infrequent. See Phase C for when Packer becomes worth adding to reduce this to ~2 minutes.
+
+**What to do:**
+1. Upload the SQL Server Developer ISO to S3 and grant the EC2 IAM role `s3:GetObject` on that bucket/key
+2. Create `scripts/sql-install/ConfigurationFile.ini` with F: as `SQLUSERDBDIR`/`SQLUSERDBLOGDIR` and G: as `SQLTEMPDBDIR`
+3. Write `scripts/sql-install/Install-SqlServer.ps1` to pull the ISO and invoke `setup.exe`
+4. Add the install script call to `user_data` after the WinRM bootstrap (or run it over WinRM manually for the first time)
+5. Run `scripts/inventory/Apply-SqlBaseline.ps1` against each instance after install
+
+---
+
+## Phase 5 — Test Environment on AWS
 
 *Weeks 3–4*
 
@@ -447,7 +499,7 @@ Start with seed scripts — simpler and sufficient for learning.
 
 ---
 
-## Phase 3 — Production Environment: On-Premises
+## Phase 6 — Production Environment: On-Premises
 
 *Weeks 4–5*
 
@@ -505,7 +557,7 @@ For production, Option A (self-hosted runner) is far more common and secure.
 
 ---
 
-## Phase 4 — CI/CD with GitHub Actions
+## Phase 4 — CI/CD with GitHub Actions (SQL Deployments First)
 
 *Weeks 5–6*
 
@@ -651,7 +703,7 @@ This is exactly how enterprise pipelines work. Most companies require 1–2 huma
 
 ---
 
-## Phase 5 — End-to-End: Your First Full Deploy
+## Phase 7 — End-to-End: Your First Full Deploy
 
 *Week 6*
 
@@ -700,7 +752,7 @@ Once the fundamentals are solid, explore these topics to get closer to enterpris
 
 ---
 
-## Phase A — SQL Server Source Control Strategy
+## Phase A — SQL Server Source Control Strategy (Do This Before Phase 4)
 
 *Foundational*
 

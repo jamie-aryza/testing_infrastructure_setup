@@ -4,6 +4,8 @@ A phased DevOps learning project building a full CI/CD pipeline across Dev, Test
 
 For the current Windows-heavy SQL Server PoC, the preferred automation path is `Terraform + WinRM + PowerShell`. Ansible was explored for Windows host prep, but has been dropped from the active path because PowerShell is a lower-friction fit on a Windows admin machine and lines up better with the repo's existing SQL Server and `dbatools` scripts.
 
+This is a PoC convenience choice, not the long-term target design. WinRM over HTTPS is being used now because it is the most straightforward native PowerShell remoting path from a Windows admin machine while the SQL install and post-install workflow is still PowerShell-first. Once the PoC is proven, the long-term options are to move the SQL hosts into a private subnet and manage them either over WinRM HTTPS through a bastion/VPN or via AWS Systems Manager (SSM) if that proves to be the better operational fit.
+
 See [DevOps_Learning_Roadmap.md](DevOps_Learning_Roadmap.md) for the full learning plan.
 
 ## Project Structure
@@ -16,7 +18,7 @@ terraform/
     vpc/            # VPC, subnets, IGW, route tables
     sql-server/     # EC2 SQL Server module (AMI, EBS, security group)
 scripts/
-  bootstrap/        # PowerShell bootstrap scripts for WinRM and host access
+  bootstrap/        # PowerShell bootstrap and pre-SQL host prep scripts
   inventory/        # PowerShell + dbatools scripts to capture/apply SQL config as JSON
   sql-install/      # SQL Server install configuration files and wrappers
 infrastructure-baseline/
@@ -72,7 +74,7 @@ cd terraform/dev
 
 ### First-time setup: `terraform.tfvars`
 
-Each environment requires a local `terraform.tfvars` (gitignored) for values that shouldn't go in source control. For dev, the only required variable is `admin_cidr` — the IP allowed WinRM HTTPS (5986) access to the SQL Server EC2s.
+Each environment requires a local `terraform.tfvars` (gitignored) for values that shouldn't go in source control. For dev, set `admin_cidr` there, and provide the local Windows automation admin password through an environment variable so it does not sit in a file.
 
 Copy the example and fill in your public IP:
 
@@ -80,6 +82,14 @@ Copy the example and fill in your public IP:
 cp terraform.tfvars.example terraform.tfvars
 # then edit terraform.tfvars and replace the placeholder with your IP
 ```
+
+Set the local Windows automation admin password before `terraform apply`:
+
+```powershell
+$env:TF_VAR_automation_admin_password = "replace-with-a-strong-password"
+```
+
+You can optionally change `automation_admin_username` in `terraform.tfvars`. The default is `sqlautomation`.
 
 Get your current public IP:
 
@@ -142,6 +152,32 @@ Quick health checks:
 terraform fmt -recursive    # auto-format .tf files
 terraform validate          # syntax + reference check (no AWS calls)
 ```
+
+## PowerShell Host Prep
+
+After `terraform apply`, run the pre-SQL Windows host prep from your admin machine:
+
+```powershell
+.\scripts\bootstrap\Invoke-HostPrep.ps1
+```
+
+By default, the script prompts in the terminal for the password of the local Windows automation account `.\sqlautomation`, so you do not need to use the Windows credential popup.
+
+If you changed the automation username, pass it explicitly:
+
+```powershell
+.\scripts\bootstrap\Invoke-HostPrep.ps1 -UserName ".\yourusername"
+```
+
+This uses Terraform outputs as the source of truth for the current host IPs and performs only the pre-SQL Windows tasks:
+- create the bootstrap working folder
+- set the Windows time zone
+- disable RDP by default
+- initialize, partition, and format the attached SQL data/log disks
+
+For the current PoC, this remoting step uses WinRM over HTTPS from a fixed admin CIDR because it keeps the PowerShell workflow simple on a Windows machine. Long term, the preferred hardening move is private-subnet SQL hosts with either bastion/VPN-backed WinRM or SSM-based management so public management exposure can be removed.
+
+Important: the password prompt here is for a Windows account on the EC2 instance that is allowed to remote and perform admin tasks. It is not asking for AWS IAM credentials.
 
 ## Typical Day-to-Day Flow
 

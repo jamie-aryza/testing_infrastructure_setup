@@ -10,6 +10,7 @@ Why:
 - Better fit for a Windows-heavy DBA workflow
 - Reuses existing PowerShell and dbatools scripts already in the repo
 - Avoids making WSL/Ansible collections a required day-to-day dependency
+- Keeps the current PoC simple while leaving room to move to bastion/VPN-backed WinRM or SSM later
 
 Execution split we are moving toward:
 - Pre-SQL host prep: PowerShell remoting over WinRM

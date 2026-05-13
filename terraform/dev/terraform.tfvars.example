@@ -2,5 +2,12 @@
 # terraform.tfvars is gitignored; this example file is committed so collaborators know the shape.
 
 # Your public IP, /32 = single host. Get it from https://checkip.amazonaws.com.
-# Used to allowlist RDP (3389) into the SQL Server EC2s during PoC.
+# Used to allowlist WinRM HTTPS (5986) into the SQL Server EC2s during PoC.
 admin_cidr = "0.0.0.0/32"
+
+# Optional: change the local Windows automation admin username created at first boot.
+# TOD: Move to keep the password out of this file; set it via the TF_VAR_automation_admin_password
+# environment variable before terraform apply.
+automation_admin_username = "sqlautomation"
+automation_admin_password = "Admin@pass!"
+

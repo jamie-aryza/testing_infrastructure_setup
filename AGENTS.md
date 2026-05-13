@@ -11,14 +11,18 @@ This is a DevOps learning project following a phased roadmap. The goal is to bui
 The current focus is a working dev → test → prod proof of concept for **SQL Server object deployments via GitHub Actions**. Infrastructure choices are deliberately simple and tweakable — production-grade hardening (strict private subnets, VPC endpoints, bastion hosts, SSM-only access, properly sized instance types) is a later phase.
 
 **Current PoC trade-offs:**
-- SQL Server EC2s sit in the public subnet with public IPs to allow direct RDP access. Production target: private subnet, accessed via bastion or SSM Session Manager.
-- Admin access is via RDP from a fixed admin CIDR allowlisted in the security group. SSM is a valid alternative (the SSM IAM role is already wired up); RDP wins for now on familiarity with SSMS.
+- SQL Server EC2s sit in the public subnet with public IPs so they can be reached for bootstrap and admin automation during PoC. Production target: private subnet, accessed via bastion or VPN.
+- Admin access is via WinRM over HTTPS (5986) from a fixed admin CIDR allowlisted in the security group. RDP is optional break-glass access only if retained, and SSM is a valid fallback because the IAM role is already wired up.
+- This is a PoC convenience trade-off, not the target design. WinRM is used now because it is the most straightforward native PowerShell remoting path from a Windows admin machine while the SQL build workflow is still PowerShell-first.
+- The long-term path is private-subnet Windows hosts managed either over WinRM HTTPS through a bastion or VPN, or through AWS Systems Manager (SSM) if that proves to be the better operational fit.
+- PowerShell is the preferred Windows automation layer for this repo's current PoC. Ansible was trialled for host prep, but has been removed from the active path because the control-node overhead on Windows is high and the existing SQL orchestration already lives naturally in PowerShell and dbatools.
 
 ## Stack
 
 - **Cloud:** AWS (Dev & Test environments)
 - **On-prem:** Windows Server (Prod environment)
 - **IaC:** Terraform
+- **Windows automation:** PowerShell remoting over WinRM HTTPS
 - **CI/CD:** GitHub Actions
 - **Database:** SQL Server on EC2 (x2 per environment — primary/secondary pattern). No free AWS License Included AMI exists for SQL Server Developer edition, so dev/test use a vanilla Windows Server AMI + silent install of SQL Server Developer. Install is driven by SQL Server's `ConfigurationFile.ini` (feature selection, instance name, service accounts, file paths) wrapped in a PowerShell script that pulls the ISO from S3, runs `setup.exe /ConfigurationFile=...`, then post-applies the JSON baseline exported from prod.
 - **App:** .NET microservice on EC2 (cloud) or app server (on-prem)
@@ -33,9 +37,11 @@ terraform/
     vpc/            # VPC, subnets, IGW, route tables
     sql-server/     # EC2 SQL Server module (AMI, EBS, security group)
 scripts/
+  bootstrap/        # PowerShell bootstrap and pre-SQL host prep scripts
   inventory/        # PowerShell + dbatools scripts to capture prod SQL config as JSON,
                     # so dev/test can be built to match. Outputs go to
                     # infrastructure-baseline/<server>/ and are committed to Git.
+  sql-install/      # SQL Server install configuration files and wrappers
 infrastructure-baseline/
   <server-name>/    # JSON snapshot of prod (sp_configure, trace flags, dbmail, etc.)
 app/
@@ -60,20 +66,21 @@ terraform apply     # deploy to AWS
 ## Network Layout
 
 - One public subnet
-- One private subnet (created but not yet used — SQL EC2s currently live in the public subnet during PoC; will move to private once SSM/bastion access is in place)
-- Security groups restrict SQL (1433) to VPC internal traffic and RDP (3389) to the configured admin CIDR
+- One private subnet (created but not yet used — SQL EC2s currently live in the public subnet during PoC; will move to private once bastion/VPN access is in place)
+- Security groups restrict SQL (1433) to VPC internal traffic and WinRM HTTPS (5986) to the configured admin CIDR
 
 ## Environment Layout
 
 | Environment | Where | SQL Server | App |
 |---|---|---|---|
-| Dev | AWS | 2x EC2 (private subnet) | EC2 (public subnet) |
-| Test | AWS | 2x EC2 (private subnet) | EC2 (public subnet) |
+| Dev | AWS | 2x EC2 (public subnet, PoC) | EC2 (public subnet) |
+| Test | AWS | 2x EC2 (public subnet, PoC) | EC2 (public subnet) |
 | Prod | On-prem | 2x Windows Server | App server |
 
 ## SQL Server Build Strategy
 
 - **Source of truth:** prod (on-prem). Dev/test drift toward prod, never the other way.
+- **Execution model:** Terraform provisions the hosts, PowerShell remoting prepares Windows and drives SQL install, and dbatools-based PowerShell scripts handle inventory/baseline sync.
 - **Capture (prod → Git):** `scripts/inventory/Inventory-SqlServer.ps1` (dbatools) exports prod config to JSON in `infrastructure-baseline/<server>/`. Re-run periodically; Git diff = config drift.
 - **Apply (Git → dev/test):** `scripts/inventory/Apply-SqlBaseline.ps1` reads those JSONs and brings a target instance in line. Supports `-WhatIf`. Refuses to run against the baseline source. Skips host-specific settings (memory, MAXDOP, tempdb sizes) — those scale to the target box, not prod.
 - **DBMail in dev/test:** the apply script's `-DbMailMode` controls behaviour. `Disable` (default) sets DBMail XPs to 0. `RedirectToLocal` recreates accounts/profiles with SMTP rewritten to a local catcher (smtp4dev / MailHog). `Match` is intentionally not implemented — too risky to silently mirror real SMTP servers into dev/test.

@@ -276,6 +276,39 @@ foreach ($targetHost in $configuredHosts) {
         else {
             Write-Host "$($targetHost.Name): install complete." -ForegroundColor Green
         }
+
+        if (-not $result.Skipped -and $result.RebootRequired) {
+            Write-Host "$($targetHost.Name): rebooting (setup exit 3010)..." -ForegroundColor Yellow
+            try {
+                Invoke-Command -ComputerName $address -UseSSL -Port 5986 `
+                    -Credential $Credential -SessionOption $sessionOption `
+                    -ScriptBlock { Restart-Computer -Force } -ErrorAction SilentlyContinue
+            }
+            catch { <# Connection drop is expected when the host reboots #> }
+
+            Write-Host "Waiting for $($targetHost.Name) to come back online (up to 10 min)..."
+            $deadline = (Get-Date).AddMinutes(10)
+            $online   = $false
+            while ((Get-Date) -lt $deadline -and -not $online) {
+                Start-Sleep -Seconds 15
+                try {
+                    $testSession = New-PSSession -ComputerName $address -UseSSL -Port 5986 `
+                        -Credential $Credential -SessionOption $sessionOption -ErrorAction Stop
+                    Remove-PSSession $testSession -ErrorAction SilentlyContinue
+                    $online = $true
+                }
+                catch {
+                    Write-Host "  $([System.DateTime]::UtcNow.ToString('HH:mm:ss')) UTC - waiting for WinRM..."
+                }
+            }
+
+            if ($online) {
+                Write-Host "$($targetHost.Name): back online after reboot." -ForegroundColor Green
+            }
+            else {
+                Write-Warning "$($targetHost.Name): WinRM did not respond within 10 minutes after reboot. Check the host manually before running Invoke-PostInstall.ps1."
+            }
+        }
     }
 }
 

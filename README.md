@@ -6,7 +6,7 @@ For the current Windows-heavy SQL Server PoC, the preferred automation path is `
 
 This is a PoC convenience choice, not the long-term target design. WinRM over HTTPS is being used now because it is the most straightforward native PowerShell remoting path from a Windows admin machine while the SQL install and post-install workflow is still PowerShell-first. Once the PoC is proven, the long-term options are to move the SQL hosts into a private subnet and manage them either over WinRM HTTPS through a bastion/VPN or via AWS Systems Manager (SSM) if that proves to be the better operational fit.
 
-See [DevOps_Learning_Roadmap.md](DevOps_Learning_Roadmap.md) for the full learning plan.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the design rationale, phase status, and PoC-to-production roadmap.
 
 ## Project Structure
 
@@ -238,11 +238,30 @@ aws s3 rb s3://aryza-sql-server-install --force
 
 If you plan to reinstall later, keeping the empty bucket avoids having to re-upload the ISO. If you delete the bucket, re-run the one-time setup steps above before the next install.
 
-**After install**, apply the prod configuration baseline:
+**After install**, run post-install configuration. This applies the prod baseline (sp_configure, trace flags, DBMail) and host-specific tuning (memory, MAXDOP, tempdb, pipeline login) in a single script:
 
 ```powershell
-.\scripts\inventory\Apply-SqlBaseline.ps1 -SqlInstance <ec2-ip> -BaselinePath infrastructure-baseline\local-live
+# Full apply for dev - reads PostInstall.Dev.Config.psd1 automatically
+.\scripts\sql-install\Invoke-PostInstall.ps1
+
+# Dry run - shows what would change, makes nothing
+.\scripts\sql-install\Invoke-PostInstall.ps1 -WhatIf
+
+# Re-sync prod config only (no sizing or login changes)
+.\scripts\sql-install\Invoke-PostInstall.ps1 -Mode ProdSync
+
+# Host-specific tuning only (no sp_configure/trace/mail changes)
+.\scripts\sql-install\Invoke-PostInstall.ps1 -Mode HostSpecific
+
+# Test environment, single host
+.\scripts\sql-install\Invoke-PostInstall.ps1 -TerraformDir terraform/test -HostName test-sql-live
 ```
+
+The script reads `scripts/sql-install/PostInstall.Dev.Config.psd1` (or `PostInstall.Test.Config.psd1` for test) for the baseline path, DBMail mode, and login settings. This file is updated automatically when you run `Inventory-SqlServer.ps1 -Environment Dev`. Review `TargetDatabase` in the config before running if you want the pipeline login granted db_owner on a specific database.
+
+The script prompts for two passwords: the `.\sqlautomation` WinRM credential and the `gha_deploy` SQL login password (skipped for `-Mode ProdSync`). Store the `gha_deploy` password as a GitHub Actions secret.
+
+**What is `gha_deploy`?** It is the SQL Server login that GitHub Actions uses to connect to the target database and deploy objects (tables, stored procedures, views, etc.). It is created as a SQL auth login (username + password, no Windows/domain dependency) with `db_owner` on the target database. The password is set once during post-install and stored as a GHA secret, then referenced in the deployment workflow: `${{ secrets.GHA_DEPLOY_PASSWORD }}`.
 
 ## Typical Day-to-Day Flow
 
@@ -258,6 +277,8 @@ terraform destroy           # tear down to save money
 
 ## Notes
 
+- **SQL Server Browser must be enabled** to run `Inventory-SqlServer.ps1` against a local named instance (e.g. `.\LIVE`). Browser is disabled by default on many installs. Enable it in an elevated PowerShell session: `Set-Service SQLBrowser -StartupType Automatic; Start-Service SQLBrowser`. Not needed for default instances or when connecting by port number directly.
 - The AWS provider is configured for `eu-west-2` (London).
 - Free tier covers t2/t3.micro EC2, 30GB EBS, and 750 hours/month of compute. NAT gateways and Elastic IPs (when unattached) are *not* free — this project deliberately avoids them.
 - Never commit `.terraform/`, `*.tfstate`, or `*.tfvars` files containing secrets. The `.gitignore` should already exclude these.
+- **Prefer Windows Server Core AMIs** for SQL Server hosts that do not need a UI. Core has a smaller attack surface, lower memory footprint, and faster patch cycles. The bootstrap and SQL install scripts are UI-agnostic and work on Core. Use Desktop Experience only if you need GUI tools on the host itself (e.g. SSMS installed locally), which is not the target pattern for this pipeline.

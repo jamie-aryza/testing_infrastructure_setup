@@ -30,6 +30,11 @@
     self-signed certificates (default for SQL Server Developer / Express). Connection is
     still encrypted - just not validated. Leave off when targeting prod with a real cert.
 
+.PARAMETER Environment
+    Optional. When supplied (Dev or Test), writes/updates the matching PostInstall.<Env>.Config.psd1
+    in scripts/sql-install/ with the BaselinePath and DbMailMode derived from this run.
+    GhaDeployLoginName and TargetDatabase are preserved if the file already exists.
+
 .EXAMPLE
     .\Inventory-SqlServer.ps1 -SqlInstance prod-sql-01 -OutputPath ..\..\infrastructure-baseline\prod-primary
 
@@ -50,7 +55,10 @@ param(
 
     [System.Management.Automation.PSCredential]$SqlCredential,
 
-    [switch]$TrustServerCertificate
+    [switch]$TrustServerCertificate,
+
+    [ValidateSet('Live', 'Test')]
+    [string]$Environment
 )
 
 $ErrorActionPreference = 'Stop'
@@ -207,3 +215,67 @@ Save-Json '_manifest' $manifest
 Write-Host "`nDone. Output: $OutputPath" -ForegroundColor Green
 Write-Host "Suggested next step: " -NoNewline
 Write-Host "git add $OutputPath && git diff --staged" -ForegroundColor Yellow
+
+# Update the per-environment PostInstall config file if -Environment was supplied
+if ($Environment) {
+    $configDir     = Join-Path $PSScriptRoot '..\sql-install'
+    $configFile    = Join-Path $configDir "PostInstall.$Environment.Config.psd1"
+    $resolvedOutput = (Resolve-Path $OutputPath).Path
+
+    # Derive BaselinePath relative to the repo root (two levels up from scripts/inventory/)
+    $repoRoot     = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $relativePath = $resolvedOutput.Substring($repoRoot.Length).TrimStart('\','/')
+
+    # Derive DbMailMode from captured dbmail.json
+    $dbMailPath = Join-Path $resolvedOutput 'dbmail.json'
+    $mailMode   = 'Disable'
+    if (Test-Path $dbMailPath) {
+        $dbMailData = Get-Content $dbMailPath -Raw | ConvertFrom-Json
+        if ($dbMailData.Enabled -eq $true) { $mailMode = 'RedirectToLocal' }
+    }
+
+    # Preserve user-editable fields if the config file already exists
+    $loginName     = 'gha_deploy'
+    $targetDb      = ''
+    $smtpHost      = 'localhost'
+    $smtpPort      = 25
+    if (Test-Path $configFile) {
+        $existing  = Import-PowerShellDataFile -Path $configFile
+        if ($existing.GhaDeployLoginName) { $loginName = [string]$existing.GhaDeployLoginName }
+        if ($existing.TargetDatabase)     { $targetDb  = [string]$existing.TargetDatabase }
+        if ($existing.LocalSmtpHost)      { $smtpHost  = [string]$existing.LocalSmtpHost }
+        if ($existing.LocalSmtpPort)      { $smtpPort  = [int]$existing.LocalSmtpPort }
+    }
+
+    $configContent = @"
+# Post-install configuration for the $Environment environment.
+# Generated/updated by Inventory-SqlServer.ps1 -Environment $Environment.
+# Review TargetDatabase and GhaDeployLoginName before running Invoke-PostInstall.ps1.
+@{
+    # Path to infrastructure-baseline/<server>/ produced by Inventory-SqlServer.ps1.
+    # Updated automatically when Inventory-SqlServer.ps1 is run with -Environment $Environment.
+    BaselinePath = '$relativePath'
+
+    # DBMail handling in $($Environment.ToLower()).
+    # Disable         - set DBMail XPs = 0 (safest default)
+    # RedirectToLocal - recreate accounts/profiles pointing at a local SMTP catcher (smtp4dev / MailHog)
+    DbMailMode    = '$mailMode'
+    LocalSmtpHost = '$smtpHost'
+    LocalSmtpPort = $smtpPort
+
+    # Pipeline SQL login created on $($Environment.ToLower()) SQL Servers.
+    GhaDeployLoginName = '$loginName'
+
+    # Database to grant the pipeline login db_owner on. Leave empty to skip the grant.
+    TargetDatabase = '$targetDb'
+}
+"@
+
+    $configContent | Set-Content -Path $configFile -Encoding ASCII
+    Write-Host "`nPostInstall.$Environment.Config.psd1 updated." -ForegroundColor Green
+    Write-Host "  BaselinePath = $relativePath"
+    Write-Host "  DbMailMode   = $mailMode"
+    if (-not $targetDb) {
+        Write-Host "  Review TargetDatabase in $configFile before running Invoke-PostInstall.ps1." -ForegroundColor Yellow
+    }
+}

@@ -2,6 +2,9 @@
 CLAUDE.md
 .claude/
 
+# Codex
+AGENTS.md
+
 # Terraform
 # Local provider plugin cache and module downloads — re-created by `terraform init`
 .terraform/
@@ -33,3 +36,8 @@ override.tf.json
 
 # SQL Server ISO files — too large for Git (1.5 GB+), stored in S3
 *.iso
+
+# Infrastructure baseline snapshots — excluded for PoC to avoid committing local machine config.
+# In a real pipeline these should be committed so config drift is visible as a Git diff.
+# Remove this entry and commit the folder when the baseline source moves to the real prod servers.
+infrastructure-baseline/
